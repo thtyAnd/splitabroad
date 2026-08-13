@@ -30,7 +30,7 @@ export default function CollectorScreen() {
         <View style={styles.footer}>
           <Button label="← Back" variant="ghost" style={styles.back} onPress={() => router.back()} />
           <Button
-            label="Next → Split it"
+            label="Next → The people"
             style={styles.next}
             disabled={!ready}
             onPress={() => router.push('/people')}

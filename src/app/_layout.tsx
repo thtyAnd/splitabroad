@@ -21,6 +21,7 @@ import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
 import { useEffect } from 'react';
 import { View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { TerminalProvider } from '@/payments/terminal';
@@ -49,7 +50,9 @@ export default function RootLayout() {
   if (!ready) return <View style={{ flex: 1, backgroundColor: colors.bg }} />;
 
   return (
-    <SafeAreaProvider>
+    // Required for the swipe pager on the collect screen; harmless elsewhere.
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
       <BillProvider>
         <TerminalProvider>
           <StatusBar style="light" />
@@ -72,6 +75,7 @@ export default function RootLayout() {
           </Stack>
         </TerminalProvider>
       </BillProvider>
-    </SafeAreaProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }

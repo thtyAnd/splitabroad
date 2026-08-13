@@ -1,0 +1,358 @@
+SPLITABROAD — TECHNICAL DOCUMENTATION
+=====================================
+
+Expo SDK 57 / React Native 0.86 / React 19, TypeScript throughout, one
+codebase for iOS, Android and web. Routing is file-based (expo-router), so
+every file under src/app/ is a screen and its filename is its URL.
+
+If you only read one section, read the next one.
+
+----------------------------------------------------------------------------
+
+1. WHAT EACH FOLDER IS RESPONSIBLE FOR
+--------------------------------------
+
+  SRC/APP/
+      The screens, one file per screen, and the URL is the filename.
+      _layout.tsx wraps them all with the fonts, the providers and the
+      navigation stack. Nothing here holds business logic — screens read
+      from state and call into src/lib and src/payments.
+
+  SRC/COMPONENTS/
+      Everything reusable and visual: the page frame, header, buttons,
+      inputs, avatars, the QR plate, the success animation. No knowledge of
+      the bill or of payments; they take props and render.
+
+  SRC/LIB/
+      Pure logic, no React. Money arithmetic and currency formatting, the
+      country→currency table, payment-link construction, and the fake
+      receipt the scan returns. Everything here is a plain function and
+      trivially testable.
+
+  SRC/STATE/
+      The bill itself — people, items, shares, who's paid — as one reducer
+      behind a context. The single source of truth for what's owed.
+
+  SRC/PAYMENTS/
+      Everything about taking a payment: the terminal state machine, the
+      lazily-loaded Stripe Terminal bridge, its web stub, and the
+      second-phone relay client. This is the only folder that knows Stripe
+      exists.
+
+  SRC/THEME/
+      Design tokens lifted from the Figma prototype — colours, fonts, radii,
+      spacing, the per-person colour ramp. One file; change it and the whole
+      app re-skins.
+
+  SERVER/
+      A zero-dependency Node server that does three separable jobs: serves
+      the built web app, relays the second-phone tap, and mints Stripe
+      connection tokens when a key is present. Runs fine with none of the
+      three configured.
+
+  ASSETS/IMAGES/
+      App icon, splash and favicon, generated from the brand gradient.
+
+  DIST/
+      Build output — what the server actually serves. Not in git.
+
+----------------------------------------------------------------------------
+
+2. HOW THE PIECES FIT
+---------------------
+
+            ┌──────────────── src/app (screens) ────────────────┐
+            │  index → start → entry → collector → people →     │
+            │  collect → tap → success        (+ scan, pay)     │
+            └────────┬──────────────────────────┬───────────────┘
+                     │ reads/writes             │ charges
+                     ▼                          ▼
+            ┌─────────────────┐      ┌────────────────────────┐
+            │  src/state/bill │      │   src/payments/terminal│
+            │  (one reducer)  │      │   (state machine)      │
+            └────────┬────────┘      └───────┬────────────┬───┘
+                     │ uses                  │ lazy       │ fetch
+                     ▼                       ▼            ▼
+            ┌─────────────────┐   HardwareBridge      server/index.mjs
+            │  src/lib        │   (Stripe Terminal)   (relay + tokens)
+            │  money, rails,  │
+            │  countries      │
+            └─────────────────┘
+
+State flows one way: screens dispatch into the bill reducer, the reducer
+recomputes every share, and screens render what comes back. No screen keeps
+its own copy of an amount.
+
+----------------------------------------------------------------------------
+
+3. SRC/STATE/ — THE BILL
+------------------------
+
+bill.tsx is a useReducer behind a context, exposed by useBill().
+
+The state holds the entry mode, restaurant, country and currency, the
+collector and their payment handles, the people, the line items, the split
+mode, and the collector's own share.
+
+Two ideas matter:
+
+Shares are derived, never stored. computeShares() runs on every state change
+and returns what each person owes. In manual mode that's the typed amounts;
+in items mode it's summed from the lines each person is assigned to, with
+unassigned lines falling to the whole table. Screens read shareFor(id) —
+they never do the arithmetic themselves.
+
+Rounding is done as a set, not per person. Four people splitting 128.50 each
+land on 32.125; rounding individually gives 32.13 × 4 = 128.52, and a bill
+that doesn't add up destroys trust in the app instantly. allocateRounded()
+in lib/money.ts uses largest-remainder allocation so the displayed shares
+always sum to the exact total.
+
+Actions worth knowing:
+
+  - setEntryMode wipes the items and total. Mixing a scanned receipt with
+    hand-typed lines produces a number nobody can explain, so the app
+    refuses to.
+  - setSplitMode('manual') copies the item-derived shares into the editable
+    fields first, so switching modes doesn't blank what the user was looking
+    at.
+  - addItem / patchItem / removeItem keep total in sync — items are the
+    source of truth for the total whenever there are any.
+
+----------------------------------------------------------------------------
+
+4. SRC/LIB/ — THE PURE LOGIC
+----------------------------
+
+money.ts — 42 currencies with their symbol and decimal places. Decimals
+follow ISO 4217 with two deliberate exceptions: COP and HUF are nominally
+two-decimal, but nobody prices anything in centavos or fillér, and
+$135000.00 looks broken to the person holding the bill. Also here:
+splitEvenly(), allocateRounded(), toMinorUnits() (Stripe works in minor
+units, and JPY has none), and tolerant parsing that accepts both 12,50 and
+12.50.
+
+countries.ts — 50 countries in four regions, each mapping to a currency. The
+mapping goes country→currency because several countries share one (the
+eurozone; Ecuador and Panama use USD outright), and because "where are you"
+is a question a traveller can answer without knowing an ISO code.
+
+rails.ts — the payment rails. Each has a brand colour, whether it needs a
+handle, and how to build a deep link. payLink() produces the real URLs:
+
+    revolut.me/<handle>?amount=…&currency=…
+    paypal.me/<handle>/<amount><CUR>
+    wise.com/pay/me/<handle>?amount=…&currency=…
+    venmo.com/<handle>?txn=pay&amount=…&note=…
+
+Handles are normalised first, so a pasted https://revolut.me/yuki and a
+typed @yuki both work. Cash and Tap-to-Pay return null — they have no link.
+
+mockReceipt.ts — the eleven-line sample receipt the scan returns, summing to
+128.50. Separate file so swapping in a real OCR call means changing one
+function.
+
+----------------------------------------------------------------------------
+
+5. SRC/PAYMENTS/ — TAKING MONEY
+-------------------------------
+
+This is the most involved part, because it has to work in four environments:
+a browser, Expo Go, a dev-client build with the native SDK, and a real
+Tap-to-Pay device.
+
+terminal.tsx is the state machine and the public API (useTerminal()). It
+exposes mode, phase, message, charge(), complete(), cancel() and
+toggleMode().
+
+Two modes:
+
+  - simulated (always the default) — pure software. It brings the reader up,
+    moves to waiting, and then stops. It does not complete on a timer: a
+    payment that fires while the presenter is still talking reads as a
+    screensaver, one that fires when a card arrives reads as a terminal.
+    complete() is what "a card was presented" maps to.
+  - hardware — real Stripe Tap to Pay through the native SDK.
+
+HardwareBridge.tsx is the only file that imports
+@stripe/stripe-terminal-react-native. It initialises the SDK, discovers a
+tapToPay reader, connects it against a Terminal location, then runs
+createPaymentIntent → collectPaymentMethod → confirmPaymentIntent.
+
+It is loaded with React.lazy, and only mounted while hardware mode is on.
+That is what lets the app boot in Expo Go and in a browser without the
+native module ever being touched. HardwareBridge.web.tsx is an empty stub,
+and Metro's platform resolution picks it for the web bundle — which is why
+the Stripe SDK appears in the iOS and Android bundles and is completely
+absent from the web one.
+
+relay.ts is the second-phone channel. The collector's tap screen arms a
+four-character code on the server; the payer opens /pay, enters it, and
+taps. It's a stage prop for the demo — in-memory, no auth, no money.
+Deliberately not a QR code: QR is this app's alternative payment rail, and
+putting one on the contactless screen would blur two features that need to
+read as separate.
+
+config.ts holds the backend URL and the connection-token fetch. The Stripe
+secret key never ships in the app; the server mints tokens.
+
+----------------------------------------------------------------------------
+
+6. SRC/COMPONENTS/ — THE VISUAL KIT
+-----------------------------------
+
+Screen is the page frame every screen uses: safe areas, the sticky header, a
+scroll area, an optional pinned footer, and a centred max-width column so
+the phone layout stays readable on a desktop browser.
+
+AppHeader carries the wordmark, the four step dots, and the hidden
+long-press that toggles reader mode.
+
+MoneyField deserves a note. Rendering value.toFixed(2) straight back into a
+text input fights the user — typing 3 reformats to 3.00 and the caret jumps.
+It keeps the raw text locally and only pushes a formatted value back in when
+the amount changes from somewhere else, such as Split equally.
+
+CountryPicker is region-first, then country, with a search that spans every
+region.
+
+SuccessWave is the confirmation animation: rings travelling outward across a
+tilted plane. The depth comes from three things at once — the rings are
+ellipses rather than circles, they drift up-screen as they grow, and each
+one actually blurs the content behind it (expo-blur) rather than being
+painted over it.
+
+ONE THING TO KNOW ABOUT ANIMATIONS HERE
+
+Reanimated's mount animations (entering={FadeIn…}) park the view at
+visibility: hidden until the first frame runs. If a screen mounts while a
+navigation transition is in flight, that first frame can be missed and the
+content stays invisible. This bit us: the three cards on the start screen
+rendered as an empty page.
+
+Mount animations were therefore removed from anything that has to be
+visible. What remains is driven by useSharedValue + useAnimatedStyle — the
+launch pulse, the NFC rings, the progress bar, the success wave — none of
+which can hide content if they fail to run.
+
+----------------------------------------------------------------------------
+
+7. SERVER/INDEX.MJS
+-------------------
+
+Plain Node, no dependencies, three independent jobs:
+
+  GET / AND EVERYTHING ELSE
+      Serves dist/, trying <path>.html so expo-router's static routes
+      resolve.
+
+  GET /RELAY/:CODE
+      Current state of a tap session.
+
+  POST /RELAY/:CODE/ARM
+      The collector publishes what's being collected.
+
+  POST /RELAY/:CODE/PAY
+      The payer's phone taps.
+
+  POST /CONNECTION_TOKEN
+      Stripe Terminal auth. Returns 501 without a key.
+
+  POST /LOCATION
+      Terminal location, created once and reused.
+
+  GET /HEALTH
+      What's configured.
+
+It starts with no Stripe key — the web app and the relay still work. It
+refuses to start on a live key: this is a test-mode demo and nothing should
+be able to change that by accident.
+
+Sessions live in memory and are swept after an hour.
+
+----------------------------------------------------------------------------
+
+8. BUILD AND RUN
+----------------
+
+    npm install
+
+  WEB, HOT RELOAD
+      npx expo start --web
+
+  WEB, PRODUCTION BUILD
+      npx expo export --platform web --output-dir dist
+
+  SERVE THE BUILD + RELAY
+      node server/index.mjs
+
+  PUBLIC HTTPS LINK
+      cloudflared tunnel --url http://localhost:4242
+
+  IOS DEV CLIENT
+      eas build --profile development --platform ios
+
+  ANDROID APK
+      eas build --profile preview --platform android
+
+Native builds go through EAS, which compiles in the cloud — no local Xcode
+needed, which matters here because current Xcode requires macOS 26 and the
+development machine is on 15.7.
+
+Environment variables (all optional, see .env.example):
+
+  EXPO_PUBLIC_TERMINAL_BACKEND_URL
+      Where the Stripe backend lives. Unset ⇒ simulated mode only.
+
+  EXPO_PUBLIC_TERMINAL_SIMULATED
+      Use Stripe's own Simulated Reader through the real SDK.
+
+  EXPO_PUBLIC_MERCHANT_NAME
+      Name on the OS Tap to Pay sheet.
+
+  STRIPE_SECRET_KEY
+      Server-side only. Must be sk_test_….
+
+Deploying a new build over a running demo is a directory swap — the server
+reads from disk per request, so the link keeps working and the URL doesn't
+change:
+
+    rsync -a --delete dist-next/ dist/
+
+----------------------------------------------------------------------------
+
+9. PLATFORM NOTES AND KNOWN LIMITATIONS
+---------------------------------------
+
+No contactless in a browser. Safari has no Web NFC; Android's reads tags
+only, never cards. The tap is simulated on web by design, and real
+tap-to-pay needs a native build plus Apple's proximity-reader entitlement.
+
+react-native-web scrolling. On the collect screen, neither
+ScrollView.scrollTo() nor getScrollableNode() moves the underlying element,
+and pagingEnabled emits CSS scroll-snap without snap-align on the pages,
+which snaps every programmatic scroll back to zero. The pager therefore
+drives the real scroll container by id on web and settles on the nearest
+page after a drag. This path has not been verified end-to-end on a device —
+swiping is the more thoroughly exercised route.
+
+Expo Go cannot run hardware mode; the app detects it and stays simulated.
+
+No persistence. Reloading the page clears the bill. Deliberate for a demo —
+a stale bill from a previous run is worse than re-entering one.
+
+----------------------------------------------------------------------------
+
+10. IF YOU'RE PICKING THIS UP
+-----------------------------
+
+Good first places to look:
+
+  - src/state/bill.tsx — read computeShares() first; everything else
+    follows.
+  - src/theme/tokens.ts — the entire visual language, in one file.
+  - src/payments/terminal.tsx — the payment state machine, and why it waits.
+
+Most likely next steps: swapping mockReceipt.ts for a real OCR call, adding
+persistence, and requesting the Apple entitlement so hardware mode can be
+demonstrated on a real iPhone.

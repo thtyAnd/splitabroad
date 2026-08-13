@@ -2,17 +2,16 @@ import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
-import { useCallback, useMemo, useRef, useState } from 'react';
-import {
-  NativeScrollEvent,
-  NativeSyntheticEvent,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  type SharedValue,
+} from 'react-native-reanimated';
 import { Avatar } from '@/components/Avatar';
 import { Button } from '@/components/Button';
 import { PayQr } from '@/components/PayQr';
@@ -31,24 +30,8 @@ import { colors, font, personPalette, radius, spacing } from '@/theme/tokens';
  * up too small to scan, and the person actually paying can't tell which card is
  * theirs. Handling one payment at a time is also how it works at the table.
  */
-/** Lets the arrows find the real scroll element on web — see `goTo`. */
-const PAGER_ID = 'splitabroad-pager';
-
-/**
- * The id usually lands on the scroll container, but which node react-native-web
- * puts it on is an implementation detail, so fall back to finding the one
- * element on the page that actually scrolls sideways.
- */
-function findPagerElement(): HTMLElement | null {
-  if (Platform.OS !== 'web' || typeof document === 'undefined') return null;
-  const tagged = document.getElementById(PAGER_ID);
-  if (tagged && tagged.scrollWidth > tagged.clientWidth) return tagged;
-  return (
-    [...document.querySelectorAll<HTMLElement>('div')].find(
-      (el) => el.scrollWidth > el.clientWidth + 8 && getComputedStyle(el).overflowX === 'auto'
-    ) ?? null
-  );
-}
+/** Space between two people's cards when one is swiped past the other. */
+const PAGE_GAP = 18;
 
 export default function CollectScreen() {
   const router = useRouter();
@@ -56,7 +39,10 @@ export default function CollectScreen() {
   const [copied, setCopied] = useState<string | null>(null);
   const [index, setIndex] = useState(0);
   const [pageWidth, setPageWidth] = useState(0);
-  const scroller = useRef<ScrollView>(null);
+
+  /** Live horizontal offset of the track, in pixels. Driven on the UI thread. */
+  const offset = useSharedValue(0);
+  const startOffset = useSharedValue(0);
 
   const collector = state.collectorName || 'you';
   const people = state.people;
@@ -66,35 +52,61 @@ export default function CollectScreen() {
   const collected = settled.reduce((sum, p) => sum + shareFor(p.id), 0);
   const allSettled = settled.length === people.length;
 
-  const goTo = useCallback(
-    (next: number) => {
-      const clamped = Math.max(0, Math.min(people.length - 1, next));
-      setIndex(clamped);
+  const lastPage = Math.max(0, people.length - 1);
 
-      if (Platform.OS === 'web') {
-        // Neither ScrollView.scrollTo() nor getScrollableNode() moves the
-        // element under react-native-web, so reach the real scroll container by
-        // id and drive it directly. Swiping still goes through the ScrollView;
-        // this is only what the arrows and dots need.
-        findPagerElement()?.scrollTo({ left: clamped * pageWidth, behavior: 'smooth' });
-      } else {
-        scroller.current?.scrollTo({ x: clamped * pageWidth, y: 0, animated: true });
-      }
-      if (Platform.OS !== 'web') {
-        Haptics.selectionAsync().catch(() => {});
-      }
-    },
-    [people.length, pageWidth]
+  /**
+   * A swipe that springs.
+   *
+   * Drag past half a screen — or flick hard enough — and it advances; anything
+   * short of that springs the current card back where it was, so a hesitant
+   * drag never leaves you between two people. Pulling past either end meets
+   * resistance rather than a wall.
+   */
+  const pan = useMemo(
+    () =>
+      Gesture.Pan()
+        // Only claim the gesture once it is clearly horizontal, so taps on the
+        // card's own buttons still register.
+        .activeOffsetX([-14, 14])
+        .failOffsetY([-18, 18])
+        .onBegin(() => {
+          startOffset.value = offset.value;
+        })
+        .onUpdate((e) => {
+          const raw = startOffset.value + e.translationX;
+          const min = -lastPage * pageWidth;
+          // Rubber band past the ends: keep a third of the overscroll.
+          if (raw > 0) offset.value = raw * 0.33;
+          else if (raw < min) offset.value = min + (raw - min) * 0.33;
+          else offset.value = raw;
+        })
+        .onEnd((e) => {
+          const from = Math.round(-startOffset.value / pageWidth);
+          const far = Math.abs(e.translationX) > pageWidth / 2;
+          const flicked = Math.abs(e.velocityX) > 550;
+
+          let target = from;
+          if (far || flicked) target = e.translationX < 0 ? from + 1 : from - 1;
+          if (target < 0) target = 0;
+          if (target > lastPage) target = lastPage;
+
+          offset.value = withSpring(-target * pageWidth, {
+            damping: 19,
+            stiffness: 170,
+            mass: 0.9,
+            velocity: e.velocityX,
+          });
+          runOnJS(setIndex)(target);
+        }),
+    [lastPage, pageWidth, offset, startOffset]
   );
 
-  /** After a swipe, settle on whichever page the drag ended nearest to. */
-  const onScrollEnd = useCallback(
-    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      if (!pageWidth) return;
-      goTo(Math.round(e.nativeEvent.contentOffset.x / pageWidth));
-    },
-    [pageWidth, goTo]
-  );
+  // Keep the visible page valid if someone is removed while we're on the end.
+  useEffect(() => {
+    if (index <= lastPage) return;
+    setIndex(lastPage);
+    offset.value = withSpring(-lastPage * pageWidth, { damping: 19, stiffness: 170 });
+  }, [index, lastPage, pageWidth, offset]);
 
   const copyLink = useCallback(async (person: Person, link: string) => {
     await Clipboard.setStringAsync(link);
@@ -154,93 +166,68 @@ export default function CollectScreen() {
         </Card>
       </View>
 
-      {/* Pager ------------------------------------------------------------ */}
+      {/* Pager — springy swipe, no controls ------------------------------- */}
       <View style={styles.pager} onLayout={(e) => setPageWidth(e.nativeEvent.layout.width)}>
         {pageWidth > 0 ? (
-          <ScrollView
-            ref={scroller}
-            id={PAGER_ID}
-            horizontal
-            // No pagingEnabled/snapToInterval: react-native-web turns those into
-            // CSS scroll-snap without putting snap-align on the pages, so the
-            // browser snaps every programmatic scroll straight back to zero.
-            // Settling on the nearest page after a drag does the same job.
-            showsHorizontalScrollIndicator={false}
-            onMomentumScrollEnd={onScrollEnd}
-            onScrollEndDrag={onScrollEnd}
-            decelerationRate="fast"
-            contentContainerStyle={{ width: pageWidth * people.length }}>
-            {people.map((person, i) => (
-              <View key={person.id} style={{ width: pageWidth }}>
-                <PayCard
-                  person={person}
-                  index={i + 1}
-                  amount={shareFor(person.id)}
-                  collector={collector}
-                  copied={copied === person.id}
-                  onCopy={copyLink}
-                  onTap={() =>
-                    router.push({ pathname: '/tap', params: { personId: person.id } })
-                  }
-                  onTogglePaid={() => patchPerson(person.id, { paid: !person.paid })}
-                />
-              </View>
-            ))}
-          </ScrollView>
+          <GestureDetector gesture={pan}>
+            <View style={styles.track}>
+              {people.map((person, i) => (
+                <Page key={person.id} index={i} pageWidth={pageWidth} offset={offset}>
+                  <PayCard
+                    person={person}
+                    index={i + 1}
+                    amount={shareFor(person.id)}
+                    collector={collector}
+                    copied={copied === person.id}
+                    onCopy={copyLink}
+                    onTap={() =>
+                      router.push({ pathname: '/tap', params: { personId: person.id } })
+                    }
+                    onTogglePaid={() => patchPerson(person.id, { paid: !person.paid })}
+                  />
+                </Page>
+              ))}
+            </View>
+          </GestureDetector>
         ) : null}
-      </View>
-
-      {/* Who am I looking at ---------------------------------------------- */}
-      <View style={styles.nav}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Previous person"
-          disabled={index === 0}
-          onPress={() => goTo(index - 1)}
-          style={({ pressed }) => [styles.arrow, index === 0 && styles.arrowOff, pressed && { opacity: 0.6 }]}>
-          <Text style={styles.arrowText}>←</Text>
-        </Pressable>
-
-        <View style={styles.dots}>
-          {people.map((p, i) => (
-            <Pressable
-              key={p.id}
-              accessibilityRole="button"
-              accessibilityLabel={`Go to ${p.name || `person ${i + 1}`}`}
-              onPress={() => goTo(i)}
-              hitSlop={8}>
-              <View
-                style={[
-                  styles.dot,
-                  p.paid && { backgroundColor: colors.success },
-                  i === index && styles.dotActive,
-                  i === index && p.paid && { backgroundColor: colors.success },
-                ]}
-              />
-            </Pressable>
-          ))}
-        </View>
-
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Next person"
-          disabled={index >= people.length - 1}
-          onPress={() => goTo(index + 1)}
-          style={({ pressed }) => [
-            styles.arrow,
-            index >= people.length - 1 && styles.arrowOff,
-            pressed && { opacity: 0.6 },
-          ]}>
-          <Text style={styles.arrowText}>→</Text>
-        </Pressable>
       </View>
 
       <MonoLabel style={styles.pagerHint}>
         {allSettled
           ? 'everyone has settled up'
-          : `${current?.name?.trim() || `person ${index + 1}`} · swipe for the next`}
+          : people.length > 1
+            ? `${current?.name?.trim() || `person ${index + 1}`} · ${index + 1} of ${people.length} · swipe`
+            : current?.name?.trim() || 'person 1'}
       </MonoLabel>
     </Screen>
+  );
+}
+
+/** One person's card. Scales and dims as it moves away from centre. */
+function Page({
+  index,
+  pageWidth,
+  offset,
+  children,
+}: {
+  index: number;
+  pageWidth: number;
+  offset: SharedValue<number>;
+  children: React.ReactNode;
+}) {
+  const style = useAnimatedStyle(() => {
+    // 0 when this page is centred, ±1 when it is one page away.
+    const away = Math.min(Math.abs((offset.value + index * pageWidth) / pageWidth), 1);
+    return {
+      transform: [{ translateX: offset.value }, { scale: 1 - away * 0.07 }],
+      opacity: 1 - away * 0.45,
+    };
+  });
+
+  return (
+    <Animated.View style={[styles.page, { width: pageWidth, left: index * pageWidth }, style]}>
+      <View style={styles.pageInner}>{children}</View>
+    </Animated.View>
   );
 }
 
@@ -415,6 +402,20 @@ const styles = StyleSheet.create({
     flex: 1,
     marginTop: spacing.lg,
     minHeight: 300,
+    overflow: 'hidden',
+  },
+  track: {
+    flex: 1,
+  },
+  page: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+  },
+  pageInner: {
+    flex: 1,
+    // The gutter between neighbouring cards — half on each side of the page.
+    paddingHorizontal: PAGE_GAP / 2,
   },
 
   card: {
@@ -476,45 +477,9 @@ const styles = StyleSheet.create({
     textTransform: 'none',
   },
 
-  nav: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: spacing.md,
-  },
-  arrow: {
-    width: 40,
-    height: 34,
-    borderRadius: radius.chip,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  arrowOff: { opacity: 0.3 },
-  arrowText: {
-    color: colors.muted,
-    fontFamily: font.display,
-    fontSize: 15,
-  },
-  dots: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-  },
-  dot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: colors.border,
-  },
-  dotActive: {
-    width: 20,
-    backgroundColor: colors.accent,
-  },
   pagerHint: {
     textAlign: 'center',
-    marginTop: spacing.sm,
+    marginTop: spacing.md,
     fontSize: 9.5,
     color: colors.dim,
   },

@@ -64,7 +64,7 @@ export default function ScanScreen() {
                 setPhase('aim');
               }}
             />
-            <Button label="Use these items →" style={styles.accept} onPress={accept} />
+            <Button label="Confirm the items →" style={styles.accept} onPress={accept} />
           </View>
         ) : (
           <Button
@@ -128,7 +128,7 @@ function ResultView({
     <Animated.View>
       <Display style={styles.title}>{items.length} items found</Display>
       <Body muted style={styles.subtitle}>
-        {restaurant} — check the lines, then assign them to people on the next step.
+        {restaurant} — confirm the lines. You&apos;ll add the people next, then hand out the items.
       </Body>
 
       <Card style={styles.itemCard}>

@@ -96,27 +96,12 @@ export default function PeopleScreen() {
         ) : null}
       </Card>
 
-      {items.length > 0 ? (
-        <>
-          <View style={styles.modeSwitch}>
-            <ModeTab
-              label="Split by item"
-              active={splitMode === 'items'}
-              onPress={() => setSplitMode('items')}
-            />
-            <ModeTab
-              label="Enter amounts"
-              active={splitMode === 'manual'}
-              onPress={() => setSplitMode('manual')}
-            />
-          </View>
-
-          {splitMode === 'items' ? (
-            <ItemsPanel items={items} />
-          ) : null}
-        </>
-      ) : null}
-
+      {/*
+       * People first, receipt lines second. Every line is handed out to
+       * *these* people, so the roster has to be settled before the avatars
+       * under each line mean anything — add or remove someone afterwards and
+       * the numbering under every item shifts.
+       */}
       <View style={styles.people}>
         <CollectorCard />
 
@@ -147,6 +132,29 @@ export default function PeopleScreen() {
           onPress={splitEqually}
         />
       </View>
+
+      {items.length > 0 ? (
+        <>
+          <MonoLabel style={styles.itemsHeading}>
+            {people.length + 1} at the table · now hand out the {items.length} lines
+          </MonoLabel>
+
+          <View style={styles.modeSwitch}>
+            <ModeTab
+              label="Split by item"
+              active={splitMode === 'items'}
+              onPress={() => setSplitMode('items')}
+            />
+            <ModeTab
+              label="Enter amounts"
+              active={splitMode === 'manual'}
+              onPress={() => setSplitMode('manual')}
+            />
+          </View>
+
+          {splitMode === 'items' ? <ItemsPanel items={items} /> : null}
+        </>
+      ) : null}
 
       {missingRail ? (
         <Body style={styles.blocker}>Everyone needs a payment method before you can collect.</Body>
@@ -373,10 +381,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
 
+  itemsHeading: {
+    marginTop: spacing.xl,
+  },
   modeSwitch: {
     flexDirection: 'row',
     gap: 4,
-    marginTop: spacing.lg,
+    marginTop: spacing.md,
     padding: 4,
     borderRadius: radius.input,
     backgroundColor: colors.surface,
