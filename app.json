@@ -6,31 +6,77 @@
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "splitabroad",
-    "userInterfaceStyle": "automatic",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#080B16",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "bundleIdentifier": "com.splitabroad.demo",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "splitabroad uses the camera to scan the restaurant receipt and itemise the bill.",
+        "NSLocationWhenInUseUsageDescription": "Location is required by Stripe Terminal to accept contactless payments on this device.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "entitlements": {
+        "com.apple.developer.proximity-reader.payment.acceptance": true
+      }
     },
     "android": {
+      "package": "com.splitabroad.demo",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#080B16",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.NFC",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.INTERNET"
+      ],
       "predictiveBackGestureEnabled": false
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/favicon.png",
+      "bundler": "metro"
     },
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
+          "backgroundColor": "#080B16",
           "image": "./assets/images/splash-icon.png",
-          "imageWidth": 76
+          "imageWidth": 96
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "splitabroad uses the camera to scan the restaurant receipt."
+        }
+      ],
+      [
+        "@stripe/stripe-terminal-react-native",
+        {
+          "bluetoothBackgroundMode": false,
+          "locationWhenInUsePermission": "Location is required by Stripe Terminal to accept contactless payments on this device.",
+          "tapToPayCheck": true,
+          "appDelegate": true
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "16.4"
+          },
+          "android": {
+            "minSdkVersion": 26,
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 35
+          }
         }
       ]
     ],

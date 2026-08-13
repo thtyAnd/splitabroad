@@ -30,7 +30,8 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
+# local env files — .env holds the backend URL, .env.example is committed
+.env
 .env*.local
 
 # typescript
@@ -41,3 +42,14 @@ example
 # generated native folders
 /ios
 /android
+
+# snapshot of the build the live demo link is serving
+.demo-live-backup/
+dist-next/
+
+# server credentials — never commit
+.env-server
+.env.server
+*.pem
+*_rsa
+*_ed25519

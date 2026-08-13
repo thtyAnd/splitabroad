@@ -1,98 +1,188 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
+import * as Haptics from 'expo-haptics';
+import { useRouter } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import Animated, {
+  Easing,
+  FadeIn,
+  FadeInDown,
+  cancelAnimation,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withSequence,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
 
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+import { Screen } from '@/components/Screen';
+import { Body, MonoLabel } from '@/components/ui';
+import { useBill } from '@/state/bill';
+import { colors, font, radius, spacing } from '@/theme/tokens';
 
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
-  }
-  if (Device.isDevice) {
-    return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
-    );
-  }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
+/** How long the launch pulse runs before the start screen takes over. */
+const PULSE_MS = 900;
+
+/**
+ * The front door. One tappable mark, a beat of feedback, then the app proper.
+ * It gives the demo a clean opening frame and somewhere to land on "start over".
+ */
+export default function LaunchScreen() {
+  const router = useRouter();
+  const { reset } = useBill();
+  const [launching, setLaunching] = useState(false);
+
+  const enter = useCallback(() => {
+    if (launching) return;
+    setLaunching(true);
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    }
+    reset();
+    setTimeout(() => router.push('/start'), PULSE_MS);
+  }, [launching, reset, router]);
+
   return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
+    <Screen bare scroll={false} contentStyle={styles.fill}>
+      <View style={styles.body}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Open splitabroad"
+          onPress={enter}
+          style={styles.hit}>
+          <Mark launching={launching} />
+        </Pressable>
+
+        <Animated.View style={styles.copy}>
+          <Text style={styles.wordmark}>splitabroad</Text>
+          <Body muted style={styles.tagline}>
+            Split any bill, in any currency, with anyone.
+          </Body>
+        </Animated.View>
+      </View>
+
+      <Animated.View style={styles.footer}>
+        <MonoLabel style={styles.hint}>
+          {launching ? 'Opening…' : 'Tap the mark to start'}
+        </MonoLabel>
+      </Animated.View>
+    </Screen>
   );
 }
 
-export default function HomeScreen() {
+/** The ÷ tile: breathes while idle, then throws a ring on tap. */
+function Mark({ launching }: { launching: boolean }) {
+  const breathe = useSharedValue(0);
+  const press = useSharedValue(0);
+  const ring = useSharedValue(0);
+
+  useEffect(() => {
+    breathe.value = withRepeat(
+      withTiming(1, { duration: 2200, easing: Easing.inOut(Easing.quad) }),
+      -1,
+      true
+    );
+    return () => cancelAnimation(breathe);
+  }, [breathe]);
+
+  useEffect(() => {
+    if (!launching) return;
+    cancelAnimation(breathe);
+    press.value = withSequence(
+      withSpring(1.14, { damping: 8, stiffness: 200 }),
+      withSpring(1, { damping: 12 })
+    );
+    ring.value = withTiming(1, { duration: PULSE_MS, easing: Easing.out(Easing.quad) });
+  }, [launching, press, ring, breathe]);
+
+  const tile = useAnimatedStyle(() => ({
+    transform: [
+      { scale: launching ? press.value : 1 + breathe.value * 0.035 },
+    ],
+  }));
+
+  const halo = useAnimatedStyle(() => ({
+    transform: [{ scale: 0.75 + (launching ? ring.value : breathe.value) * 0.85 }],
+    opacity: launching ? (1 - ring.value) * 0.5 : 0.06 + breathe.value * 0.06,
+  }));
+
   return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
-
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
-
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
-          />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
-
-        {Platform.OS === 'web' && <WebBadge />}
-      </SafeAreaView>
-    </ThemedView>
+    <View style={styles.markWrap}>
+      <Animated.View style={[styles.halo, halo]} />
+      <Animated.View style={tile}>
+        <LinearGradient
+          colors={[colors.accent, colors.accentAlt]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.tile}>
+          <Text style={styles.glyph}>÷</Text>
+        </LinearGradient>
+      </Animated.View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  fill: { flex: 1 },
+  body: {
     flex: 1,
-    justifyContent: 'center',
-    flexDirection: 'row',
-  },
-  safeArea: {
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
-  },
-  heroSection: {
     alignItems: 'center',
     justifyContent: 'center',
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.four,
   },
-  title: {
+  hit: {
+    padding: spacing.lg,
+  },
+  markWrap: {
+    width: 200,
+    height: 200,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  halo: {
+    position: 'absolute',
+    width: 200,
+    height: 200,
+    borderRadius: 100,
+    borderWidth: 2,
+    borderColor: colors.accent,
+    backgroundColor: 'rgba(91, 115, 255, 0.05)',
+  },
+  tile: {
+    width: 104,
+    height: 104,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  glyph: {
+    color: colors.onAccent,
+    fontFamily: font.bodyBold,
+    fontSize: 48,
+    lineHeight: 58,
+  },
+  copy: {
+    alignItems: 'center',
+    marginTop: spacing.xl,
+  },
+  wordmark: {
+    fontFamily: font.display,
+    fontSize: 30,
+    letterSpacing: -0.6,
+    color: colors.text,
+  },
+  tagline: {
+    marginTop: 6,
+    fontSize: 14,
     textAlign: 'center',
   },
-  code: {
-    textTransform: 'uppercase',
+  footer: {
+    alignItems: 'center',
+    paddingBottom: spacing.xxl,
   },
-  stepContainer: {
-    gap: Spacing.three,
-    alignSelf: 'stretch',
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
+  hint: {
+    fontSize: 10,
+    color: colors.dim,
   },
+  radiusRef: { borderRadius: radius.card },
 });
