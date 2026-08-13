@@ -71,11 +71,23 @@ systemctl daemon-reload
 systemctl enable ${SERVICE} >/dev/null
 
 echo "==> caddy site"
-# Pick the hostname: a real domain if DEMO_DOMAIN is set, otherwise sslip.io,
-# which resolves <ip>.sslip.io to the IP itself and still gets a real Let's
-# Encrypt certificate — so the demo link is https:// with no domain purchase.
+# Pick the hostname Caddy will get a certificate for, best first:
+#   1. DEMO_DOMAIN, if you pointed a domain of your own at this box
+#   2. the machine's own FQDN, if it already resolves back to this IP —
+#      Kamatera hands out one like 103-240-147-64.eu-ml-cloud-xip.com
+#   3. <ip>.sslip.io, a public wildcard resolver that maps the name to the IP
+# Any of the three gets a real Let's Encrypt certificate, so the demo link is
+# https:// without buying a domain.
 IP=$(curl -fsS4 https://ifconfig.me || hostname -I | awk '{print $1}')
-HOST=${DEMO_DOMAIN:-${IP}.sslip.io}
+FQDN=$(hostname -f 2>/dev/null || true)
+if [ -n "${DEMO_DOMAIN:-}" ]; then
+  HOST=$DEMO_DOMAIN
+elif [ -n "$FQDN" ] && [ "$FQDN" != "localhost" ] && getent hosts "$FQDN" | grep -q "^${IP}[[:space:]]"; then
+  HOST=$FQDN
+else
+  HOST=${IP}.sslip.io
+fi
+echo "    certificate host: ${HOST}"
 
 cat >/etc/caddy/Caddyfile <<CADDY
 ${HOST} {

@@ -25,6 +25,18 @@ Sign in at <https://console.kamatera.com> and create a server:
 When it finishes, note two things from the server's page: the **public IPv4
 address** and the **root password** (or use your key).
 
+> There is no "SSH" button anywhere in the Kamatera console, and there doesn't
+> need to be. SSH is just how you reach any Linux box: open Terminal on the Mac
+> and run `ssh root@<public-ip>`, with the root password the console showed at
+> creation. (If you lost it, the server's page has *Reset root password*; the
+> *Console* button opens an in-browser terminal that needs no SSH at all.)
+
+Do this once so the deploy commands stop asking for a password:
+
+```bash
+ssh-copy-id root@<server-ip>
+```
+
 > If you already have the server, skip to step 2 — all that's needed is
 > `ssh root@<ip>` working from your Mac.
 
@@ -39,11 +51,12 @@ scp deploy/server-setup.sh root@<server-ip>:/root/ && ssh root@<server-ip> 'bash
 That installs Node 22, registers the app as a systemd service (so it restarts on
 crash and on reboot), and puts Caddy in front of it for automatic HTTPS.
 
-**About the address:** a plain IP can't get an HTTPS certificate, so the script
-uses `sslip.io` — `https://<your-ip-with-dashes>.sslip.io` resolves straight to
-your server and still gets a real Let's Encrypt certificate. If you'd rather use
-a domain you own, point an A record at the IP and run the script with
-`DEMO_DOMAIN=demo.yourdomain.com bash /root/server-setup.sh` instead.
+**About the address:** a bare IP can't get an HTTPS certificate, so the script
+picks a hostname for you — the machine's own Kamatera name if it resolves back
+to this IP (they look like `103-240-147-64.eu-ml-cloud-xip.com`), otherwise
+`<ip>.sslip.io`, a public resolver that maps the name straight to the IP. Either
+way you get a real Let's Encrypt certificate. Own a domain? Point an A record at
+the IP and run `DEMO_DOMAIN=demo.yourdomain.com bash /root/server-setup.sh`.
 
 ## 3. Push the app
 
@@ -58,9 +71,9 @@ the link never serves a half-updated page.
 ## 4. The links to share
 
 ```
-https://<ip-with-dashes>.sslip.io       ← the demo
-https://<ip-with-dashes>.sslip.io/pay   ← the second phone, for the tap
-https://<ip-with-dashes>.sslip.io/health ← "is it alive?" check
+https://<your-server-hostname>       ← the demo
+https://<your-server-hostname>/pay   ← the second phone, for the tap
+https://<your-server-hostname>/health ← "is it alive?" check
 ```
 
 Add the first one to the iPhone home screen (Share → *Add to Home Screen*) and
