@@ -105,10 +105,18 @@ CADDY
 systemctl restart caddy
 
 echo "==> firewall"
-ufw allow 22/tcp >/dev/null 2>&1 || true
-ufw allow 80/tcp >/dev/null 2>&1 || true
-ufw allow 443/tcp >/dev/null 2>&1 || true
-yes | ufw enable >/dev/null 2>&1 || true
+# Opt-in: run with WITH_UFW=1 to turn the firewall on. Left off by default
+# because this box may host other services whose ports we can't see from here,
+# and a default-deny rule would quietly break them.
+if [ "${WITH_UFW:-0}" = "1" ]; then
+  ufw allow 22/tcp >/dev/null 2>&1 || true
+  ufw allow 80/tcp >/dev/null 2>&1 || true
+  ufw allow 443/tcp >/dev/null 2>&1 || true
+  yes | ufw enable >/dev/null 2>&1 || true
+  echo "    ufw enabled (22, 80, 443)"
+else
+  echo "    skipped (set WITH_UFW=1 to enable ufw for 22/80/443)"
+fi
 
 cat <<DONE
 
