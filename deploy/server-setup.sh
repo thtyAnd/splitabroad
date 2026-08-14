@@ -57,6 +57,8 @@ User=splitabroad
 WorkingDirectory=${APP_DIR}
 Environment=PORT=${PORT}
 Environment=WEB_ROOT=${APP_DIR}/dist
+# Loopback only — Caddy is the way in, so the raw port can't bypass TLS.
+Environment=BIND=127.0.0.1
 # Add a Stripe *test* key here later if you wire up real Terminal tokens:
 # Environment=STRIPE_SECRET_KEY=sk_test_...
 ExecStart=/usr/bin/node ${APP_DIR}/server/index.mjs

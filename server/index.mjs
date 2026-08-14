@@ -23,6 +23,12 @@ import { createServer } from 'node:http';
 import { extname, join, normalize, resolve } from 'node:path';
 
 const PORT = Number(process.env.PORT ?? 4242);
+/**
+ * Default is every interface, so the same-wifi demo (`http://<mac-ip>:4242`)
+ * works with no extra setup. Behind a reverse proxy set `BIND=127.0.0.1` —
+ * otherwise the app is also reachable on the raw port, bypassing TLS.
+ */
+const BIND = process.env.BIND ?? '0.0.0.0';
 const KEY = process.env.STRIPE_SECRET_KEY ?? '';
 const LOCATION_NAME = process.env.STRIPE_LOCATION_NAME ?? 'splitabroad demo';
 const WEB_ROOT = resolve(process.env.WEB_ROOT ?? join(import.meta.dirname, '..', 'dist'));
@@ -261,9 +267,9 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, BIND, () => {
   console.log('splitabroad demo server');
-  console.log(`  http://localhost:${PORT}/health`);
+  console.log(`  http://localhost:${PORT}/health  (bound to ${BIND})`);
   console.log(`  web:    ${existsSync(WEB_ROOT) ? WEB_ROOT : 'dist/ missing — run: npx expo export --platform web'}`);
   console.log(`  stripe: ${KEY ? 'test mode' : 'not configured (relay + web still work)'}`);
 });

@@ -246,17 +246,97 @@ Environment variables (all optional, see `.env.example`):
 | `EXPO_PUBLIC_TERMINAL_SIMULATED` | Use Stripe's own Simulated Reader through the real SDK. |
 | `EXPO_PUBLIC_MERCHANT_NAME` | Name on the OS Tap to Pay sheet. |
 | `STRIPE_SECRET_KEY` | Server-side only. Must be `sk_test_…`. |
+| `PORT` / `WEB_ROOT` | Server-side. Which port to listen on, which directory to serve. |
+| `BIND` | Server-side. Interface to listen on. Defaults to `0.0.0.0`; set `127.0.0.1` behind a reverse proxy. |
 
-Deploying a new build over a running demo is a directory swap — the server reads
-from disk per request, so the link keeps working and the URL doesn't change:
+Deploying a new build over a running demo needs no restart — the server reads
+from disk per request, so the link keeps working and the URL doesn't change.
+Copy the content-hashed bundles in first and swap the HTML last, and no visitor
+ever sees a half-updated page:
 
 ```bash
-rsync -a --delete dist-next/ dist/
+cp -R dist-next/_expo/. dist/_expo/ && cp -R dist-next/assets/. dist/assets/ && cp dist-next/*.html dist/
 ```
+
+`deploy/push-to-server.sh` does exactly this against the deployed box — see the
+next section.
 
 ---
 
-## 9. Platform notes and known limitations
+## 9. Where it runs — the exact addresses
+
+The demo is deployed on a Kamatera box (Ubuntu 24.04, 1 vCPU / 1 GB,
+`103.240.147.64`) and starts itself on boot. No laptop is in the chain.
+
+### The links
+
+| Address | What it is |
+| --- | --- |
+| <https://103-240-147-64.eu-ml-cloud-xip.com> | **The demo.** The server's own Kamatera hostname. |
+| <https://103-240-147-64.sslip.io> | Same app, second name. |
+| <https://103-240-147-64.nip.io> | Same app, third name. |
+| <http://103.240.147.64> | Same app over plain http, no certificate. Last resort. |
+
+Three names because ad blockers and filtered DNS sometimes blocklist
+wildcard-DNS domains — and the lists disagree about which, so a phone that
+refuses one usually loads another. All three carry real Let's Encrypt
+certificates; http redirects to https with a 308.
+
+### Every route, spelled out
+
+Paths are the same on all four addresses; `<base>` below is any of them.
+
+| URL | Screen |
+| --- | --- |
+| `<base>/` | Launch screen — tap the ÷ mark to begin |
+| `<base>/start` | How's the bill? — scan / type items / total |
+| `<base>/scan` | Receipt scan (modal). `?next=entry` returns to step 1 |
+| `<base>/entry` | Step 1 — the bill, and where the scanned lines are confirmed |
+| `<base>/collector` | Step 2 — who paid, and their payment handles |
+| `<base>/people` | Step 3 — the people first, the receipt lines under them |
+| `<base>/collect` | Step 4 — one payer per card, QR or tap |
+| `<base>/tap` | The reader screen (modal). `?personId=…` |
+| **`<base>/pay`** | **The payer's second phone.** `?code=ABCD` prefills the code |
+| `<base>/success` | Payment confirmation |
+
+Machine endpoints on the same origin:
+
+| URL | Purpose |
+| --- | --- |
+| `<base>/health` | `{"ok":true,…}` — the one-line "is it alive" check |
+| `<base>/relay/:code` | Tap session state |
+| `<base>/relay/:code/arm` | POST — collector publishes what's being collected |
+| `<base>/relay/:code/pay` | POST — payer's phone taps |
+
+### On the box
+
+| | |
+| --- | --- |
+| App files | `/opt/splitabroad/dist` (the web build), `/opt/splitabroad/server` |
+| Service | `splitabroad.service` — enabled, `Restart=always`, runs as `splitabroad` |
+| Bind | `127.0.0.1:4242` — loopback only, so the raw port can't bypass TLS |
+| Proxy | Caddy, `/etc/caddy/Caddyfile`, terminates TLS on :80 and :443 |
+| Certificates | Let's Encrypt, renewed by Caddy without asking |
+
+The box also runs an unrelated service (`pmassist`); nothing here touches it, and
+the firewall was deliberately left off so no default-deny rule could break it.
+
+### Shipping a new build to it
+
+```bash
+./deploy/push-to-server.sh root@103.240.147.64
+```
+
+Builds locally, uploads the content-hashed bundles first and swaps the HTML in
+last, so the address never serves a half-updated page. Safe mid-demo.
+
+Operational detail, the home-screen shortcut and what to do when a phone shows a
+blank page are in [ACCESS.md](ACCESS.md); the one-time server build-out is in
+[DEPLOY-KAMATERA.md](DEPLOY-KAMATERA.md).
+
+---
+
+## 10. Platform notes and known limitations
 
 **No contactless in a browser.** Safari has no Web NFC; Android's reads tags
 only, never cards. The tap is simulated on web by design, and real tap-to-pay
@@ -277,7 +357,7 @@ a stale bill from a previous run is worse than re-entering one.
 
 ---
 
-## 10. If you're picking this up
+## 11. If you're picking this up
 
 Good first places to look:
 
